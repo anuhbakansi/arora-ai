@@ -101,6 +101,7 @@ with st.sidebar:
                              help="Free key: https://aistudio.google.com/apikey")
     with st.expander("⚙️ Advanced"):
         MODEL = st.text_input("Model", value=cfg("GEMINI_MODEL", DEFAULT_MODEL))
+        WORKERS = st.slider("Parallel requests (lower = fewer rate-limit errors)", 1, 5, 2)
     st.caption("Your own free key = your own free quota. The app itself sets no limits on text, files or audio.")
     st.markdown("---")
     st.caption("Tip: record or upload several lectures at once for one combined summary.")
@@ -298,13 +299,14 @@ def mcq_batch(source, count, idx):
         response_mime_type="application/json", response_schema=list[MCQ],
     )
     last = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
             r = client.models.generate_content(model=MODEL, contents=[*source, prompt], config=conf)
             return clean_mcqs(json.loads(r.text)), None
-        except Exception as e:  # retry with backoff
+        except Exception as e:  # retry with backoff (long wait for rate limits)
             last = e
-            time.sleep(1.5 * (attempt + 1))
+            limited = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+            time.sleep(20 * (attempt + 1) if limited else 1.5 * (attempt + 1))
     return [], last
 
 
@@ -312,7 +314,7 @@ def generate_mcqs(source, n, on_progress):
     per, seen, result, last_err = 25, set(), [], None
     jobs = list(range(math.ceil(n / per) + 1))  # one spare batch to survive duplicates
     for rnd in range(3):
-        with ThreadPoolExecutor(max_workers=min(5, len(jobs))) as ex:
+        with ThreadPoolExecutor(max_workers=min(WORKERS, len(jobs))) as ex:
             futs = [ex.submit(mcq_batch, source, per, j) for j in jobs]
             for fut in as_completed(futs):
                 items, err = fut.result()
